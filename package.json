@@ -1,0 +1,21 @@
+{
+  "name": "anticipy",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Anticipy — an anticipatory personal agent. Desktop app: agent core service + chat/inspector shell.",
+  "type": "module",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "build": "pnpm -r build",
+    "typecheck": "pnpm -r typecheck",
+    "test": "pnpm -r test",
+    "test:scenarios": "pnpm --filter @anticipy/core test:scenarios",
+    "dev:core": "pnpm --filter @anticipy/core dev",
+    "dev:shell": "pnpm --filter @anticipy/shell dev"
+  },
+  "devDependencies": {
+    "typescript": "^5.5.4"
+  }
+}

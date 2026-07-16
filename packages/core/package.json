@@ -1,0 +1,41 @@
+{
+  "name": "@anticipy/core",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Anticipy agent core — outcome state machine, memory, watches, actors/verifier, audit, LLM provider abstraction, local HTTP/WS API.",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    },
+    "./protocol": {
+      "types": "./dist/server/protocol.d.ts",
+      "default": "./dist/server/protocol.js"
+    }
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "dev": "tsx src/main.ts",
+    "demo": "tsx src/demo/runDemo.ts",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "test:scenarios": "vitest run test/scenarios"
+  },
+  "dependencies": {
+    "better-sqlite3": "^11.3.0",
+    "ws": "^8.18.0",
+    "zod": "^3.23.8"
+  },
+  "devDependencies": {
+    "@types/better-sqlite3": "^7.6.11",
+    "@types/node": "^22.5.0",
+    "@types/ws": "^8.5.12",
+    "tsx": "^4.19.0",
+    "typescript": "^5.5.4",
+    "vitest": "^2.0.5"
+  }
+}

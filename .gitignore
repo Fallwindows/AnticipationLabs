@@ -1,0 +1,17 @@
+node_modules/
+dist/
+build/
+out/
+*.tsbuildinfo
+.DS_Store
+*.log
+.env
+.env.*
+!.env.example
+coverage/
+# local runtime state (databases, vault key material)
+var/
+*.sqlite
+*.sqlite3
+*.db
+release/

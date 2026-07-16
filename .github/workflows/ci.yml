@@ -1,0 +1,41 @@
+name: CI
+
+on:
+  push:
+    branches: ['**']
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Install dependencies
+        # Electron's binary is not needed to typecheck/build/test; skip the download in CI.
+        run: pnpm install --frozen-lockfile
+        env:
+          ELECTRON_SKIP_BINARY_DOWNLOAD: '1'
+
+      - name: Typecheck
+        run: pnpm typecheck
+
+      - name: Unit + invariant tests (fixtures only — no network, no credentials)
+        run: pnpm --filter @anticipy/core test
+
+      - name: Scenario acceptance tests (§10 fixtures)
+        run: pnpm --filter @anticipy/core test:scenarios
+
+      - name: Build
+        run: pnpm build
+        env:
+          ELECTRON_SKIP_BINARY_DOWNLOAD: '1'
