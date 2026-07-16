@@ -42,7 +42,8 @@ export {
   type PreparationResult,
 } from './prep/preparation.js';
 export { ExecutionActor, type ActorOutcome } from './exec/executionActor.js';
-export { Verifier, type VerifyResult } from './verify/verifier.js';
+export { Verifier, type VerifyResult, type ChatReadView } from './verify/verifier.js';
+export { redactSensitiveText, containsSensitiveText } from './util/redact.js';
 export {
   WatchScheduler,
   WATCH_DEFAULTS,

@@ -180,6 +180,13 @@ export class ApprovalTokenRepo {
       .all(outcomeId) as { doc: string }[];
     return rows.map((r) => JSON.parse(r.doc) as ApprovalToken);
   }
+
+  all(): ApprovalToken[] {
+    const rows = this.db.prepare('SELECT doc FROM approval_tokens ORDER BY rowid').all() as {
+      doc: string;
+    }[];
+    return rows.map((r) => JSON.parse(r.doc) as ApprovalToken);
+  }
 }
 
 export class WatchRepo {
@@ -216,6 +223,16 @@ export class WatchRepo {
       )
       .all(nowIso) as { doc: string }[];
     return rows.map((r) => JSON.parse(r.doc) as Watch);
+  }
+
+  /** Active watches whose timeout has passed — loads only active rows, not all history. */
+  activeTimedOut(nowIso: string): Watch[] {
+    const rows = this.db
+      .prepare(`SELECT doc FROM watches WHERE state = 'active' ORDER BY rowid`)
+      .all() as { doc: string }[];
+    return rows
+      .map((r) => JSON.parse(r.doc) as Watch)
+      .filter((w) => w.timeoutAt !== undefined && w.timeoutAt <= nowIso);
   }
 }
 
@@ -346,24 +363,8 @@ export class AuditRepo {
     return { ...entry, seq: Number(res.lastInsertRowid) };
   }
 
-  all(): AuditEntry[] {
-    const rows = this.db.prepare('SELECT * FROM audit_log ORDER BY seq').all() as {
-      seq: number;
-      id: string;
-      outcome_id: string | null;
-      actor: string;
-      action: string;
-      target: string | null;
-      disclosure: string | null;
-      spoke_to: string | null;
-      promised_eta: string | null;
-      result: string;
-      timestamp: string;
-      signature_hash: string | null;
-      prev_hash: string;
-      hash: string;
-    }[];
-    return rows.map((r) => ({
+  private rowToEntry(r: AuditDbRow): AuditEntry {
+    return {
       seq: r.seq,
       id: r.id,
       outcomeId: r.outcome_id ?? undefined,
@@ -378,10 +379,35 @@ export class AuditRepo {
       signatureHash: r.signature_hash ?? undefined,
       prevHash: r.prev_hash,
       hash: r.hash,
-    }));
+    };
+  }
+
+  all(): AuditEntry[] {
+    const rows = this.db.prepare('SELECT * FROM audit_log ORDER BY seq').all() as AuditDbRow[];
+    return rows.map((r) => this.rowToEntry(r));
   }
 
   byOutcome(outcomeId: string): AuditEntry[] {
-    return this.all().filter((e) => e.outcomeId === outcomeId);
+    const rows = this.db
+      .prepare('SELECT * FROM audit_log WHERE outcome_id = ? ORDER BY seq')
+      .all(outcomeId) as AuditDbRow[];
+    return rows.map((r) => this.rowToEntry(r));
   }
+}
+
+interface AuditDbRow {
+  seq: number;
+  id: string;
+  outcome_id: string | null;
+  actor: string;
+  action: string;
+  target: string | null;
+  disclosure: string | null;
+  spoke_to: string | null;
+  promised_eta: string | null;
+  result: string;
+  timestamp: string;
+  signature_hash: string | null;
+  prev_hash: string;
+  hash: string;
 }

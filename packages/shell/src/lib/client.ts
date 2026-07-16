@@ -16,8 +16,19 @@ import {
  */
 
 export const DEFAULT_PORT = 4271;
-export const HTTP_BASE = `http://127.0.0.1:${DEFAULT_PORT}`;
-export const WS_URL = `ws://127.0.0.1:${DEFAULT_PORT}/ws`;
+
+// Same-origin when the core serves the built shell (production/Electron); explicit
+// localhost core only under the Vite dev server. Same-origin means the core emits
+// no CORS headers at all in production.
+const servedByCore =
+  typeof window !== 'undefined' &&
+  window.location.protocol.startsWith('http') &&
+  window.location.port !== '5173';
+
+export const HTTP_BASE = servedByCore ? '' : `http://127.0.0.1:${DEFAULT_PORT}`;
+export const WS_URL = servedByCore
+  ? `${window.location.protocol === 'https:' ? 'wss' : 'ws'}://${window.location.host}/ws`
+  : `ws://127.0.0.1:${DEFAULT_PORT}/ws`;
 
 export type ConnectionStatus = 'connecting' | 'connected' | 'reconnecting';
 

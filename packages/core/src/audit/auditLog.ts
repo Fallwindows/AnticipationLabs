@@ -30,15 +30,37 @@ export class AuditLog {
     private events: EventBus,
   ) {}
 
+  /**
+   * The canonical hashed surface of an entry. Shared by append() and verifyChain()
+   * so a field added to AuditEntry can never silently diverge between hashing and
+   * verification (which would make the tamper check flag legitimate rows).
+   */
+  private static hashedBody(entry: Omit<AuditEntry, 'seq' | 'hash'>): string {
+    return canonicalJson({
+      id: entry.id,
+      outcomeId: entry.outcomeId,
+      actor: entry.actor,
+      action: entry.action,
+      target: entry.target,
+      disclosure: entry.disclosure,
+      spokeTo: entry.spokeTo,
+      promisedETA: entry.promisedETA,
+      result: entry.result,
+      signatureHash: entry.signatureHash,
+      timestamp: entry.timestamp,
+      prevHash: entry.prevHash,
+    });
+  }
+
   append(write: AuditWrite): AuditEntry {
     const prevHash = this.repo.lastHash();
-    const body = {
+    const body: Omit<AuditEntry, 'seq' | 'hash'> = {
       id: this.ids.next('audit'),
       ...write,
       timestamp: this.clock.now().toISOString(),
       prevHash,
     };
-    const hash = sha256Hex(prevHash + canonicalJson({ ...body, hash: undefined }));
+    const hash = sha256Hex(prevHash + AuditLog.hashedBody(body));
     const entry = this.repo.append({ ...body, hash });
     this.events.emit({ type: 'audit.appended', entryId: entry.id, outcomeId: entry.outcomeId });
     return entry;
@@ -56,24 +78,7 @@ export class AuditLog {
   verifyChain(): number | null {
     let prev = 'genesis';
     for (const e of this.repo.all()) {
-      const expected = sha256Hex(
-        prev +
-          canonicalJson({
-            id: e.id,
-            outcomeId: e.outcomeId,
-            actor: e.actor,
-            action: e.action,
-            target: e.target,
-            disclosure: e.disclosure,
-            spokeTo: e.spokeTo,
-            promisedETA: e.promisedETA,
-            result: e.result,
-            signatureHash: e.signatureHash,
-            timestamp: e.timestamp,
-            prevHash: e.prevHash,
-            hash: undefined,
-          }),
-      );
+      const expected = sha256Hex(prev + AuditLog.hashedBody(e));
       if (e.prevHash !== prev || e.hash !== expected) return e.seq;
       prev = e.hash;
     }

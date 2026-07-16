@@ -2,7 +2,12 @@ import type { ActionSignature, Outcome, VerificationRecord } from '../domain/typ
 import type { ReadPorts } from '../integrations/ports.js';
 import { AuditLog } from '../audit/auditLog.js';
 import type { Clock } from '../util/clock.js';
-import { ChatRepo } from '../persistence/repos.js';
+import type { ChatMessage } from '../util/events.js';
+
+/** Read-only view of the chat log — the verifier can never hold a writable repo (I6). */
+export interface ChatReadView {
+  all(): ChatMessage[];
+}
 
 export type VerifyResult =
   | { status: 'verified'; record: VerificationRecord }
@@ -20,7 +25,7 @@ export type VerifyResult =
 export class Verifier {
   constructor(
     private read: ReadPorts,
-    private chat: ChatRepo,
+    private chat: ChatReadView,
     private audit: AuditLog,
     private clock: Clock,
   ) {}

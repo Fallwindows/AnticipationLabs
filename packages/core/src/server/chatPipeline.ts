@@ -2,7 +2,9 @@ import type { AgentCore } from '../app/agentCore.js';
 import type { Episode } from '../domain/types.js';
 import type { LLMProvider } from '../llm/provider.js';
 import { LLMProviderError } from '../llm/provider.js';
-import { HOUR, MINUTE, DAY } from '../util/clock.js';
+import { DAY } from '../util/clock.js';
+import { WATCH_DEFAULTS } from '../watch/watchScheduler.js';
+import { redactSensitiveText } from '../util/redact.js';
 
 /**
  * Live chat pipeline: turns free-form user messages into episodes, interpretation,
@@ -67,7 +69,7 @@ export class ChatPipeline {
         tag: 'chat-reply',
         system:
           'You are Anticipy. Reply in one or two short sentences. Never promise an action that has not been approved.',
-        prompt: text,
+        prompt: redactSensitiveText(text),
       });
       this.core.postChat({ role: 'anticipy', text: reply, kind: 'text' });
     } catch (err) {
@@ -115,8 +117,10 @@ export class ChatPipeline {
             description: 'user or counterparty confirms delivery',
           },
           followUpAction: 'nudge-front-desk',
-          followUpWindowMs: 20 * MINUTE,
-          firstPollAt: new Date(this.core.clock.now().getTime() + 20 * MINUTE).toISOString(),
+          // cadence comes from D-007 defaults, not a re-derived constant
+          firstPollAt: new Date(
+            this.core.clock.now().getTime() + WATCH_DEFAULTS.delivery.windowMs,
+          ).toISOString(),
         });
         break;
       case 'commerce.submit-return':
@@ -166,7 +170,13 @@ export class ChatPipeline {
         });
         break;
       }
-      case 'airline.rebook':
+      case 'airline.rebook': {
+        // The replacement segment's own flight number and DEPARTURE date drive the
+        // watch — not the approval-day date (a post-midnight-UTC departure would
+        // otherwise never match); D-007: watch until departure + 24 h.
+        const segments = ev.segments as { flightNumber: string; departure: string }[] | undefined;
+        const segment = segments?.[0];
+        const departure = segment?.departure ?? String(sig.params.departure ?? '');
         this.core.startWatch({
           outcomeId,
           kind: 'flight',
@@ -174,16 +184,31 @@ export class ChatPipeline {
           closeCondition: {
             kind: 'flight-completed',
             params: {
-              flightNumber: String(sig.params.optionId),
-              date: this.core.clock.now().toISOString().slice(0, 10),
+              flightNumber: segment?.flightNumber ?? String(sig.params.optionId),
+              date: departure.slice(0, 10),
             },
             description: 'replacement flight departs',
           },
+          timeoutAt: departure
+            ? new Date(new Date(departure).getTime() + DAY).toISOString()
+            : undefined,
         });
         break;
-      default:
-        // reservation.book, chat.deliver-brief: the verified action was the deliverable.
+      }
+      case 'reservation.book':
+      case 'chat.deliver-brief':
+        // The verified action WAS the deliverable for these types.
         this.core.closeAsActionWasOutcome(outcomeId, ev);
+        break;
+      default:
+        // Never invent a closure for an action type without an explicit watch
+        // policy — closing by fallthrough would silently waive I4/I8.
+        this.core.postChat({
+          role: 'system',
+          text: `Verified, but no ground-truth watch policy is registered for "${sig.actionType}" — the outcome stays open (Verified) until one closes or cancels it.`,
+          kind: 'text',
+          outcomeId,
+        });
         break;
     }
 
@@ -199,5 +224,3 @@ export class ChatPipeline {
     }
   }
 }
-
-export const CHAT_PIPELINE_TIMEOUTS = { HOUR, DAY };

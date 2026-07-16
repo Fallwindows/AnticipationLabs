@@ -42,6 +42,12 @@ export class MemoryStore {
     if (write.sensitivity === 'vault-ref' && !write.value.startsWith('vault:')) {
       throw new Error('vault-ref facts must store a vault pointer, never a raw value');
     }
+    // Re-interpreting a whole episode re-emits its facts (I2); an identical active
+    // fact is returned rather than duplicated.
+    const existing = this.query({ subject: write.subject, predicate: write.predicate }).find(
+      (f) => f.value === write.value,
+    );
+    if (existing && !write.supersedes) return existing;
     const fact: MemoryFact = {
       id: this.ids.next('fact'),
       subject: write.subject,
@@ -50,7 +56,8 @@ export class MemoryStore {
       source: write.source,
       confidence: write.confidence,
       sensitivity: write.sensitivity ?? 'normal',
-      expiresAt: write.expiresAt,
+      // normalized to UTC so expiry string comparisons are timezone-proof
+      expiresAt: write.expiresAt ? new Date(write.expiresAt).toISOString() : undefined,
       createdAt: this.clock.now().toISOString(),
     };
     this.repo.save(fact);
@@ -70,20 +77,25 @@ export class MemoryStore {
   }
 
   /**
-   * Convenience for corrections: supersedes the current active fact(s) with the same
-   * subject+predicate (the cracked POT, not the plant; "Fridays after two", not
-   * Tuesdays — I2).
+   * Convenience for corrections: ONE new fact supersedes every current active fact
+   * with the same subject+predicate (the cracked POT, not the plant; "Fridays after
+   * two", not Tuesdays — I2).
    */
   correct(write: FactWrite): MemoryFact {
     const existing = this.query({ subject: write.subject, predicate: write.predicate });
-    let fact: MemoryFact | undefined;
-    if (existing.length === 0) {
+    const first = existing[0];
+    if (!first) {
       return this.add(write);
     }
-    for (const prior of existing) {
-      fact = this.add({ ...write, supersedes: prior.id });
+    const fact = this.add({ ...write, supersedes: first.id });
+    for (const prior of existing.slice(1)) {
+      const row = this.repo.get(prior.id);
+      if (row && !row.supersededBy) {
+        this.repo.save({ ...row, supersededBy: fact.id });
+        this.events.emit({ type: 'memory.fact.superseded', factId: row.id, supersededBy: fact.id });
+      }
     }
-    return fact!;
+    return fact;
   }
 
   get(id: string): MemoryFact | undefined {

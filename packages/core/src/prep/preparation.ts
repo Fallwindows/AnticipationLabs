@@ -3,6 +3,7 @@ import type { ReadPorts } from '../integrations/ports.js';
 import type { LLMProvider } from '../llm/provider.js';
 import type { MemoryStore } from '../memory/memoryStore.js';
 import { hashCanonical } from '../util/canonical.js';
+import { redactSensitiveText } from '../util/redact.js';
 
 /**
  * Preparation / research (§5.5): takes an Outcome to its final consequential screen
@@ -135,7 +136,9 @@ const emailSend: Preparer = async ({ params, llm, outcome, memory }) => {
         `To: ${to}  Subject: ${subject}`,
         `Hard constraints:\n${exclusions || '(none)'}`,
         `Source facts:\n${memory.promptLines().join('\n')}`,
-        typeof params.sourceNotes === 'string' ? `Source material:\n${params.sourceNotes}` : '',
+        typeof params.sourceNotes === 'string'
+          ? `Source material:\n${redactSensitiveText(params.sourceNotes)}`
+          : '',
       ]
         .filter(Boolean)
         .join('\n\n'),
@@ -271,6 +274,8 @@ const flightRebook: Preparer = async ({ read, params }) => {
       params: {
         optionId,
         description: option.description,
+        departure: option.departure,
+        arrival: option.arrival,
         fareDifference: option.fareDifference,
         seat: option.seat ?? null,
         baggageThrough: option.baggageThrough,

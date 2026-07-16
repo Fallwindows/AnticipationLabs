@@ -66,18 +66,24 @@ export class OutcomeEngine {
     owner: string;
     beneficiary?: string;
     originEpisodeId: string;
+    episodeKey?: string;
     interpretedGoal: string;
     originClassification: Outcome['originClassification'];
     constraints?: OutcomeConstraint[];
   }): Outcome {
     const now = this.clock.now().toISOString();
+    // A fresh outcome must never overwrite an existing row (the repo upserts):
+    // sequential ID sources restart from 1 after a core restart.
+    let id = this.ids.next('out');
+    while (this.repo.get(id)) id = this.ids.next('out');
     const outcome: Outcome = {
-      id: this.ids.next('out'),
+      id,
       title: args.title,
       state: 'Discovered',
       owner: args.owner,
       beneficiary: args.beneficiary,
       originEpisodeId: args.originEpisodeId,
+      episodeKey: args.episodeKey,
       interpretedGoal: args.interpretedGoal,
       originClassification: args.originClassification,
       constraints: args.constraints ?? [],
@@ -100,6 +106,30 @@ export class OutcomeEngine {
 
   all(): Outcome[] {
     return this.repo.all();
+  }
+
+  /** Durable lookup of an interpreter candidate across restarts (I2). */
+  byEpisodeKey(episodeId: string, key: string): Outcome | undefined {
+    return this.repo.all().find((o) => o.originEpisodeId === episodeId && o.episodeKey === key);
+  }
+
+  /**
+   * Attach/replace the interpreter's read-only preparation hint. Not a state change,
+   * but it goes through the engine (single write path) and emits an event so the
+   * inspector stays live.
+   */
+  setPreparationHint(id: string, hint: { kind: string; params: Record<string, unknown> }): Outcome {
+    const o = this.get(id);
+    const next: Outcome = { ...o, preparationHint: hint, updatedAt: this.clock.now().toISOString() };
+    this.repo.save(next);
+    this.events.emit({
+      type: 'outcome.changed',
+      outcomeId: id,
+      from: o.state,
+      to: o.state,
+      reason: 'preparation hint attached',
+    });
+    return next;
   }
 
   /** The single write path for state. Everything else in this class goes through here. */
@@ -196,12 +226,15 @@ export class OutcomeEngine {
     const newHash = signatureHash(action);
     const now = this.clock.now().toISOString();
     if (o.state === 'Approved') {
-      return this.transition(
+      const next = this.transition(
         id,
         'AwaitingApproval',
         { preparedAction: action, preparedSignatureHash: newHash, approvalTokenId: undefined },
         'edit invalidated prior approval',
       );
+      // Re-approval is needed most in exactly this case — announce the new signature.
+      this.events.emit({ type: 'approval.requested', outcomeId: id, signatureHash: newHash });
+      return next;
     }
     // Prepared / AwaitingApproval: same state, new signature — record without a state edge.
     const next: Outcome = {
@@ -303,10 +336,18 @@ export class OutcomeEngine {
     return this.transition(id, 'Executing', {}, `idempotent recovery (re-read only): ${reason}`);
   }
 
-  /** Ground truth read independently confirms the action (I6). */
+  /**
+   * Ground truth read independently confirms the action (I6). The real separation is
+   * type-level (Verifiers hold read ports only); this gate additionally requires the
+   * evidence to declare a read source, so a synthetic or actor-originated record is
+   * rejected at the state machine too.
+   */
   markVerified(id: string, verification: VerificationRecord): Outcome {
-    if (verification.source.startsWith('actor')) {
-      throw new ApprovalGateError(id, 'verification evidence must come from a read-only source, not an actor');
+    if (!verification.source.startsWith('read:')) {
+      throw new ApprovalGateError(
+        id,
+        `verification evidence must come from a read-only source ("read:*"), got "${verification.source}"`,
+      );
     }
     return this.transition(id, 'Verified', { verification }, 'ground truth confirmed', verification);
   }

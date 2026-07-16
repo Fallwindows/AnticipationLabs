@@ -67,6 +67,13 @@ export class FixtureWorld {
   /** action names whose next write should side-effect then time out (I7 tests) */
   failNextWriteWithTimeout = new Set<string>();
 
+  /**
+   * action names whose next write is LOST: recorded as attempted but never lands,
+   * then times out. The complementary I7 case — re-reads will exhaust with nothing
+   * found, and the machine must still offer a way out (Verifying -> Cancelled).
+   */
+  loseNextWrite = new Set<string>();
+
   private seq = 0;
   /** injected by the fixture harness so world timestamps follow the test clock */
   now: () => string = () => '1970-01-01T00:00:00.000Z';

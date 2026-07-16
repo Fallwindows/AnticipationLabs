@@ -93,7 +93,7 @@ describe('Channel policy (I13)', () => {
 });
 
 describe('Telephony compliance gate (D-005, §9)', () => {
-  it('the telephony tier refuses calls when disabled', async () => {
+  it('the telephony tier refuses calls when disabled — no side effect, machine not wedged', async () => {
     const h = makeHarness({ telephonyEnabled: false });
     h.world.hotels.push({ name: 'Le Germain', phone: '+1', amenities: {} });
     const o = makeApproved(h, {
@@ -103,10 +103,22 @@ describe('Telephony compliance gate (D-005, §9)', () => {
       pageVersionHash: 'v1',
       disclosures: ['assistant call'],
     });
-    await expect(h.core.actor.execute(o.id)).rejects.toThrow(/disabled/);
+    const result = await h.core.actor.execute(o.id);
+    expect(result).toEqual({ status: 'refused', reason: expect.stringMatching(/disabled/) });
+    // No call happened and the refusal is audited.
+    expect(h.world.calls).toHaveLength(0);
+    const refusal = h.core.audit.byOutcome(o.id).find((e) => e.result.includes('REFUSED'))!;
+    expect(refusal.result).toContain('disabled');
+    // The machine is NOT wedged: verification confirms nothing happened, and from
+    // Verifying the kill switch is legal (§9).
+    h.core.engine.beginVerification(o.id);
+    const verify = await h.core.verifier.verify(h.core.engine.get(o.id));
+    expect(verify.status).toBe('not-found');
+    const cancelled = h.core.engine.cancel(o.id, 'gate closed; giving up');
+    expect(cancelled.state).toBe('Cancelled');
   });
 
-  it('calls without a disclosure are refused at the adapter (I11)', async () => {
+  it('calls without a disclosure are refused BEFORE the token is consumed (I11/I5)', async () => {
     const h = makeHarness();
     const o = makeApproved(h, {
       actionType: 'telephony.call',
@@ -116,5 +128,10 @@ describe('Telephony compliance gate (D-005, §9)', () => {
       disclosures: [],
     });
     await expect(h.core.actor.execute(o.id)).rejects.toThrow(/disclosure/);
+    // The pre-flight fired before the gate: token still live, outcome still Approved.
+    const current = h.core.engine.get(o.id);
+    expect(current.state).toBe('Approved');
+    const token = h.core.approvals.get(current.approvalTokenId!)!;
+    expect(token.consumedAt).toBeUndefined();
   });
 });

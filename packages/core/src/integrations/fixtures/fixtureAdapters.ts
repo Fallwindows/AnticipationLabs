@@ -21,7 +21,7 @@ import type {
   WriteReceipt,
   WritePorts,
 } from '../ports.js';
-import { AdapterTimeoutError } from '../ports.js';
+import { AdapterRefusalError, AdapterTimeoutError } from '../ports.js';
 import type { FixtureWorld } from './fixtureWorld.js';
 
 /**
@@ -39,10 +39,21 @@ function maybeTimeout(world: FixtureWorld, action: string): void {
   }
 }
 
+/** The request never landed: record the attempt, apply nothing, time out. */
+function maybeLose(world: FixtureWorld, action: string, idempotencyKey: string, args: unknown): boolean {
+  if (world.loseNextWrite.has(action)) {
+    world.loseNextWrite.delete(action);
+    world.recordWrite(action, idempotencyKey, args);
+    throw new AdapterTimeoutError(`${action} was lost in transit; nothing landed`);
+  }
+  return false;
+}
+
 class FixtureEmail implements EmailReadPort, EmailWritePort {
   constructor(private world: FixtureWorld) {}
 
   async sendEmail(draft: EmailDraft, idempotencyKey: string): Promise<WriteReceipt> {
+    maybeLose(this.world, 'email.send', idempotencyKey, draft);
     this.world.recordWrite('email.send', idempotencyKey, draft);
     const existing = this.world.sentMessages.find(
       (m) => (m as SentMessage & { idempotencyKey?: string }).idempotencyKey === idempotencyKey,
@@ -236,10 +247,10 @@ class FixtureHotelTelephony implements HotelReadPort, TelephonyReadPort, Telepho
     idempotencyKey: string,
   ): Promise<WriteReceipt> {
     if (!this.compliance.enabled) {
-      throw new Error('telephony tier is disabled (compliance gate, DECISIONS D-005)');
+      throw new AdapterRefusalError('telephony tier is disabled (compliance gate, DECISIONS D-005)');
     }
     if (!args.disclosure || args.disclosure.trim() === '') {
-      throw new Error('calls must carry a disclosure (I11)');
+      throw new AdapterRefusalError('calls must carry a disclosure (I11)');
     }
     this.world.recordWrite('telephony.call', idempotencyKey, args);
     const existing = this.world.calls.find((c) => c.idempotencyKey === idempotencyKey);

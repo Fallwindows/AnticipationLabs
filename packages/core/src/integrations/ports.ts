@@ -14,6 +14,19 @@ export class AdapterTimeoutError extends Error {
   }
 }
 
+/**
+ * Thrown by an adapter BEFORE any side effect occurs (compliance gate closed,
+ * mandatory disclosure missing, invalid target). Contract: a refusing adapter
+ * guarantees the world is untouched, so the caller may treat it as a clean no-op
+ * failure rather than an unknown-outcome timeout.
+ */
+export class AdapterRefusalError extends Error {
+  constructor(msg: string) {
+    super(msg);
+    this.name = 'AdapterRefusalError';
+  }
+}
+
 export interface WriteReceipt {
   /** adapter-level id of the created artifact (message id, return id, PNR, ...) */
   ref: string;

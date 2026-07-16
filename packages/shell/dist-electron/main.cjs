@@ -73,7 +73,13 @@ function createWindow() {
   if (DEV) {
     void window.loadURL("http://localhost:5173");
   } else {
-    void window.loadFile(import_node_path.default.join(__dirname, "..", "dist", "index.html"));
+    void coreIsReachable().then((up) => {
+      if (up) {
+        void window.loadURL("http://127.0.0.1:4271/");
+      } else {
+        void window.loadFile(import_node_path.default.join(__dirname, "..", "dist", "index.html"));
+      }
+    });
   }
 }
 void import_electron.app.whenReady().then(async () => {

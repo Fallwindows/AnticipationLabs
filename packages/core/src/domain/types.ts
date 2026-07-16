@@ -44,11 +44,12 @@ export const PRE_EXECUTION_STATES: readonly OutcomeState[] = [
  * The explicit legal-edge table (§4.1 state diagram). The OutcomeEngine refuses any
  * transition not listed here; tests assert the refusals (§12 "forbid illegal edges").
  *
- * Cancellation (the kill switch, §9) is available from every pre-execution state and
- * from Watching. It is deliberately NOT available during Executing/Executed/Verifying:
- * a side effect may already have fired, so the machine must reach ground truth (I6)
- * before a human cancel can be honored — otherwise "cancelled" would misrepresent the
- * world (I4).
+ * Cancellation (the kill switch, §9) is available from every pre-execution state,
+ * from Watching, and — as a last-resort human abandon — from Verifying (the audit
+ * trail records that a side effect may exist; verification was inconclusive). It is
+ * deliberately NOT available during Executing/Executed: the side effect is in flight
+ * and the machine must reach the verification stage first, so "cancelled" never
+ * misrepresents the world (I4/I6).
  */
 export const LEGAL_TRANSITIONS: Readonly<Record<OutcomeState, readonly OutcomeState[]>> = {
   Discovered: ['Interpreting', 'Superseded', 'Cancelled'],
@@ -59,7 +60,7 @@ export const LEGAL_TRANSITIONS: Readonly<Record<OutcomeState, readonly OutcomeSt
   Approved: ['Executing', 'AwaitingApproval', 'Superseded', 'Cancelled'],
   Executing: ['Executed'],
   Executed: ['Verifying'],
-  Verifying: ['Executing', 'Verified'],
+  Verifying: ['Executing', 'Verified', 'Cancelled'],
   Verified: ['Watching', 'Closed'],
   Watching: ['Closed', 'Cancelled'],
   Closed: [],
@@ -114,10 +115,12 @@ export interface Outcome {
   /** classification of the originating utterances: discussion/emotion never authorize (I3) */
   originClassification: 'commitment' | 'discussion' | 'emotion' | 'signal';
   constraints: OutcomeConstraint[];
+  /** stable interpreter key within the origin episode; drives cross-restart supersession (I2) */
+  episodeKey?: string;
   /** interpreter's read-only research hint for the preparation service (never an action) */
   preparationHint?: { kind: string; params: Record<string, unknown> };
   preparedAction?: ActionSignature;
-  /** hash of preparedAction at the time approval was requested */
+  /** hash of preparedAction, kept in lockstep with it at every engine write site */
   preparedSignatureHash?: string;
   approvalTokenId?: string;
   idempotencyKey?: string;

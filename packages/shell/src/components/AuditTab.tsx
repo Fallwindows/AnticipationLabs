@@ -1,4 +1,4 @@
-import { fmtDateTime } from '../lib/format';
+import { fmtDateTime, shortHash } from '../lib/format';
 import type { AuditEntry, StateSnapshot } from '../lib/types';
 
 /** Append-only trail (I11): ordered by seq, newest last, hash chain visible. */
@@ -50,9 +50,9 @@ function AuditRow(props: { entry: AuditEntry }): JSX.Element {
         <td>{entry.target ?? '—'}</td>
         <td className="audit-result">{entry.result}</td>
         <td className="audit-chain">
-          <span title={`hash ${entry.hash}`}>{entry.hash.slice(0, 10)}</span>
+          <span title={`hash ${entry.hash}`}>{shortHash(entry.hash)}</span>
           <span className="chain-prev" title={`prev ${entry.prevHash}`}>
-            ↑{entry.prevHash.slice(0, 10)}
+            ↑{shortHash(entry.prevHash)}
           </span>
         </td>
       </tr>

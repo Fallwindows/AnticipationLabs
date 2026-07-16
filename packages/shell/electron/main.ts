@@ -61,7 +61,15 @@ function createWindow(): void {
   if (DEV) {
     void window.loadURL('http://localhost:5173');
   } else {
-    void window.loadFile(path.join(__dirname, '..', 'dist', 'index.html'));
+    // The core serves the built shell same-origin — no CORS surface in production.
+    // Falling back to the local file keeps a degraded UI if the core is absent.
+    void coreIsReachable().then((up) => {
+      if (up) {
+        void window.loadURL('http://127.0.0.1:4271/');
+      } else {
+        void window.loadFile(path.join(__dirname, '..', 'dist', 'index.html'));
+      }
+    });
   }
 }
 

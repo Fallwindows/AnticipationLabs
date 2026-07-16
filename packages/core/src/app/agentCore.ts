@@ -91,7 +91,6 @@ export class AgentCore {
   readonly chatRepo: ChatRepo;
   readonly episodes: EpisodeRepo;
 
-  private outcomeKeyMap = new Map<string, string>(); // `${episodeId}:${key}` -> outcomeId
   private autoPrepareThreshold: number;
   private userName: string;
 
@@ -152,7 +151,14 @@ export class AgentCore {
       this.chatRepo,
       this.events,
     );
-    this.verifier = new Verifier(config.read, this.chatRepo, this.audit, this.clock);
+    // The verifier receives a READ VIEW of chat, never the writable repo (I6).
+    const chatRepo = this.chatRepo;
+    this.verifier = new Verifier(
+      config.read,
+      { all: () => chatRepo.all() },
+      this.audit,
+      this.clock,
+    );
     this.watches = new WatchScheduler(
       watchRepo,
       this.engine,
@@ -265,18 +271,19 @@ export class AgentCore {
     }
 
     for (const cand of interpretation.outcomes) {
-      const mapKey = `${episode.id}:${cand.key}`;
-      const existingId = this.outcomeKeyMap.get(mapKey);
+      // Candidate identity is durable: episodeKey lives on the Outcome row, so
+      // supersession and dedup survive a core restart mid-episode (I2, §3).
+      const existing = this.engine.byEpisodeKey(episode.id, cand.key);
 
       // Supersession first: a later statement replaced an earlier candidate (I2).
-      let supersededTargetId: string | undefined;
-      if (cand.supersedesKey) {
-        supersededTargetId = this.outcomeKeyMap.get(`${episode.id}:${cand.supersedesKey}`);
-      }
+      const supersededTarget = cand.supersedesKey
+        ? this.engine.byEpisodeKey(episode.id, cand.supersedesKey)
+        : undefined;
+      const supersededTargetId = supersededTarget?.id;
 
       let outcome: Outcome | undefined;
-      if (existingId) {
-        outcome = this.engine.get(existingId);
+      if (existing) {
+        outcome = existing;
         if (outcome.state === 'Dormant' && cand.classification === 'commitment') {
           outcome = this.engine.reopenFromDormant(outcome.id, 'new evidence: now a commitment');
           report.reopened.push(outcome);
@@ -287,11 +294,11 @@ export class AgentCore {
           owner: cand.owner,
           beneficiary: cand.beneficiary,
           originEpisodeId: episode.id,
+          episodeKey: cand.key,
           interpretedGoal: cand.interpretedGoal,
           originClassification: cand.classification,
           constraints: cand.constraints,
         });
-        this.outcomeKeyMap.set(mapKey, outcome.id);
         outcome = this.engine.beginInterpretation(outcome.id);
         report.created.push(outcome);
       }
@@ -316,7 +323,7 @@ export class AgentCore {
       // Persist the preparation hint; discussion/emotion or low confidence stays Dormant (I3).
       const current = this.engine.get(outcome.id);
       if (cand.preparation && current.state === 'Interpreting') {
-        this.setPreparationHint(outcome.id, cand.preparation);
+        this.engine.setPreparationHint(outcome.id, cand.preparation);
       }
       if (current.state === 'Interpreting') {
         const notActionable =
@@ -336,12 +343,6 @@ export class AgentCore {
       }
     }
     return report;
-  }
-
-  private setPreparationHint(outcomeId: string, hint: { kind: string; params: Record<string, unknown> }): void {
-    const o = this.engine.get(outcomeId);
-    const repo = new OutcomeRepo(this.db);
-    repo.save({ ...o, preparationHint: hint, updatedAt: this.clock.now().toISOString() });
   }
 
   // -- Entity resolution (§5.3) ----------------------------------------------------
@@ -428,10 +429,12 @@ export class AgentCore {
    * Verified.
    */
   async executeAndVerify(outcomeId: string, maxRereads = 2): Promise<VerifyResult> {
-    await this.actor.execute(outcomeId);
+    const attempt = await this.actor.execute(outcomeId);
     this.engine.beginVerification(outcomeId);
     let result = await this.verifier.verify(this.engine.get(outcomeId));
     let rereads = 0;
+    // An adapter REFUSAL guarantees no side effect exists — re-reading is pointless.
+    if (attempt.status === 'refused') maxRereads = 0;
     while (result.status === 'not-found' && rereads < maxRereads) {
       this.engine.recoverForReread(outcomeId, 'verifier found no artifact yet');
       this.engine.markExecuted(outcomeId, 're-read pass, nothing re-submitted');
@@ -439,6 +442,23 @@ export class AgentCore {
       result = await this.verifier.verify(this.engine.get(outcomeId));
       rereads += 1;
     }
+    if (result.status === 'verified') {
+      this.engine.markVerified(outcomeId, result.record);
+    }
+    return result;
+  }
+
+  /**
+   * Re-run verification for an outcome parked in Verifying (a mismatch or exhausted
+   * re-reads earlier). This is the real "re-check later" path — and if the human
+   * gives up instead, cancel is legal from Verifying (§9 kill switch).
+   */
+  async verifyAgain(outcomeId: string): Promise<VerifyResult> {
+    const outcome = this.engine.get(outcomeId);
+    if (outcome.state !== 'Verifying') {
+      throw new Error(`outcome ${outcomeId} is ${outcome.state}; only Verifying outcomes can re-verify`);
+    }
+    const result = await this.verifier.verify(outcome);
     if (result.status === 'verified') {
       this.engine.markVerified(outcomeId, result.record);
     }

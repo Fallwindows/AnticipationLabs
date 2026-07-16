@@ -117,6 +117,7 @@ function migrate(db: Db): void {
       prev_hash TEXT NOT NULL,
       hash TEXT NOT NULL
     );
+    CREATE INDEX IF NOT EXISTS idx_audit_outcome ON audit_log(outcome_id);
 
     CREATE TRIGGER IF NOT EXISTS audit_no_update
       BEFORE UPDATE ON audit_log

@@ -1,4 +1,4 @@
-import type { Watch, WatchKind } from '../domain/types.js';
+import { TERMINAL_STATES, type Watch, type WatchKind } from '../domain/types.js';
 import type { ReadPorts } from '../integrations/ports.js';
 import type { Clock } from '../util/clock.js';
 import { MINUTE, HOUR, DAY } from '../util/clock.js';
@@ -92,6 +92,8 @@ export class WatchScheduler {
     const now = this.clock.now();
     const nowIso = now.toISOString();
     const intervalMs = args.intervalMs ?? defaults.intervalMs;
+    // Caller-supplied timestamps are normalized to UTC so string comparisons in the
+    // due-query and timeout checks are timezone-proof.
     const watch: Watch = {
       id: this.ids.next('watch'),
       outcomeId: args.outcomeId,
@@ -101,12 +103,16 @@ export class WatchScheduler {
       followUpPolicy: args.followUpAction
         ? { windowMs: args.followUpWindowMs ?? defaults.windowMs, action: args.followUpAction }
         : null,
-      timeoutAt:
-        args.timeoutAt ??
-        (defaults.timeoutMs ? new Date(now.getTime() + defaults.timeoutMs).toISOString() : undefined),
+      timeoutAt: args.timeoutAt
+        ? new Date(args.timeoutAt).toISOString()
+        : defaults.timeoutMs
+          ? new Date(now.getTime() + defaults.timeoutMs).toISOString()
+          : undefined,
       closeCondition: args.closeCondition,
       state: 'active',
-      nextPollAt: args.firstPollAt ?? new Date(now.getTime() + intervalMs).toISOString(),
+      nextPollAt: args.firstPollAt
+        ? new Date(args.firstPollAt).toISOString()
+        : new Date(now.getTime() + intervalMs).toISOString(),
       windowStartedAt: nowIso,
       followUpsSentInWindow: 0,
       createdAt: nowIso,
@@ -130,7 +136,7 @@ export class WatchScheduler {
     const watch = this.mustGet(watchId);
     const next: Watch = {
       ...watch,
-      nextPollAt: args.nextPollAt,
+      nextPollAt: new Date(args.nextPollAt).toISOString(),
       updatedAt: this.clock.now().toISOString(),
       ...(args.resetFollowUpWindow
         ? { windowStartedAt: this.clock.now().toISOString(), followUpsSentInWindow: 0 }
@@ -164,13 +170,33 @@ export class WatchScheduler {
     }
   }
 
-  /** External ground truth arrived without polling (e.g. the user said "got it"). */
+  /**
+   * External ground truth arrived without polling — the human-confirmation path
+   * ("got it, thanks"). Guarded: only an ACTIVE watch on an outcome that is actually
+   * Watching can close it, evidence must be non-empty, and sibling watches are torn
+   * down so nothing keeps polling a closed outcome.
+   */
   satisfyExternally(watchId: string, evidence: Record<string, unknown>, closeOutcome = true): void {
     const watch = this.mustGet(watchId);
+    if (watch.state !== 'active') {
+      throw new Error(`watch ${watchId} is ${watch.state}; only an active watch can be satisfied`);
+    }
+    if (closeOutcome) {
+      if (Object.keys(evidence).length === 0) {
+        throw new Error('external satisfaction requires evidence — ground truth is not a label (I4)');
+      }
+      const outcome = this.engine.get(watch.outcomeId);
+      if (outcome.state !== 'Watching') {
+        throw new Error(
+          `outcome ${watch.outcomeId} is ${outcome.state}; external ground truth closes only Watching outcomes`,
+        );
+      }
+    }
     this.repo.save({ ...watch, state: 'satisfied', updatedAt: this.clock.now().toISOString() });
     this.events.emit({ type: 'watch.updated', watchId, outcomeId: watch.outcomeId });
     if (closeOutcome) {
       this.engine.close(watch.outcomeId, { kind: 'ground-truth', evidence });
+      this.cancelForOutcome(watch.outcomeId, 'outcome closed by external ground truth');
     }
   }
 
@@ -180,17 +206,43 @@ export class WatchScheduler {
     return w;
   }
 
+  private ticking = false;
+
   /**
    * One scheduler pass. Deterministic under TestClock: advance the clock, call tick().
+   * Reentrancy-guarded (an overlapping timer tick is a no-op) and error-isolated per
+   * watch — one poisoned watch (bad adapter, unregistered close-condition kind after
+   * a restart) must never stall every other watch or the timeout sweep.
    */
   async tick(): Promise<void> {
-    const nowIso = this.clock.now().toISOString();
-    for (const watch of this.repo.due(nowIso)) {
-      await this.pollOne(watch, nowIso);
-    }
-    // Timeouts fire even when a poll isn't due.
-    for (const watch of this.repo.all()) {
-      if (watch.state === 'active' && watch.timeoutAt && watch.timeoutAt <= nowIso) {
+    if (this.ticking) return;
+    this.ticking = true;
+    try {
+      const nowIso = this.clock.now().toISOString();
+      for (const watch of this.repo.due(nowIso)) {
+        try {
+          await this.pollOne(watch, nowIso);
+        } catch (err) {
+          // Push the failing watch forward one interval so it cannot starve the queue.
+          const current = this.repo.get(watch.id);
+          if (current && current.state === 'active') {
+            this.repo.save({
+              ...current,
+              nextPollAt: new Date(this.clock.now().getTime() + current.pollPolicy.intervalMs).toISOString(),
+              updatedAt: nowIso,
+            });
+          }
+          this.audit.append({
+            outcomeId: watch.outcomeId,
+            actor: 'watch-scheduler',
+            action: 'watch.poll-error',
+            target: watch.id,
+            result: err instanceof Error ? err.message : String(err),
+          });
+        }
+      }
+      // Timeouts fire even when a poll isn't due.
+      for (const watch of this.repo.activeTimedOut(nowIso)) {
         this.repo.save({ ...watch, state: 'timed-out', updatedAt: nowIso });
         this.events.emit({ type: 'watch.updated', watchId: watch.id, outcomeId: watch.outcomeId });
         this.audit.append({
@@ -202,6 +254,8 @@ export class WatchScheduler {
         });
         this.onTimeout(watch);
       }
+    } finally {
+      this.ticking = false;
     }
   }
 
@@ -214,11 +268,16 @@ export class WatchScheduler {
     const snapshot = await poller(watch, this.read);
     const verdict = evaluator(watch, snapshot, nowIso);
 
+    // Re-read after the await: a concurrent cancel/satisfy must never be clobbered
+    // by a stale in-memory copy (that would resurrect a cancelled watch as active).
+    const current = this.repo.get(watch.id);
+    if (!current || current.state !== 'active') return;
+
     let next: Watch = {
-      ...watch,
+      ...current,
       lastPolledAt: nowIso,
       lastPollResult: snapshot,
-      nextPollAt: new Date(this.clock.now().getTime() + watch.pollPolicy.intervalMs).toISOString(),
+      nextPollAt: new Date(this.clock.now().getTime() + current.pollPolicy.intervalMs).toISOString(),
       updatedAt: nowIso,
     };
 
@@ -232,21 +291,27 @@ export class WatchScheduler {
           kind: 'ground-truth',
           evidence: verdict.evidence ?? snapshot,
         });
+        this.cancelForOutcome(watch.outcomeId, 'outcome closed by met close condition');
       }
       return;
     }
 
-    // Follow-up budget: at most one per window (I8).
+    // Follow-up budget: at most one per window (I8) — and only while the outcome is
+    // still genuinely being watched.
     const followUpPolicy = next.followUpPolicy;
     if (verdict.followUpWanted && followUpPolicy) {
       const windowEnd = new Date(next.windowStartedAt).getTime() + followUpPolicy.windowMs;
       if (this.clock.now().getTime() >= windowEnd) {
         next = { ...next, windowStartedAt: nowIso, followUpsSentInWindow: 0 };
       }
-      if (next.followUpsSentInWindow < 1) {
+      const outcome = this.engine.get(watch.outcomeId);
+      if (next.followUpsSentInWindow < 1 && !TERMINAL_STATES.includes(outcome.state)) {
         const handler = this.followUps.get(watch.closeCondition.kind);
         if (handler) {
           await handler(next, snapshot);
+          // Re-read once more: the handler awaited, the world may have moved again.
+          const afterHandler = this.repo.get(watch.id);
+          if (!afterHandler || afterHandler.state !== 'active') return;
           next = { ...next, followUpsSentInWindow: next.followUpsSentInWindow + 1 };
           this.audit.append({
             outcomeId: watch.outcomeId,

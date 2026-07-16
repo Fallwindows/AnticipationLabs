@@ -143,3 +143,45 @@ authorization layer recomputes the hash at execution time and refuses on any mis
 
 **Rationale:** "Any edit invalidates the token" (I5) must be a byte-level property, not a
 UI convention. Canonical JSON keeps the hash stable across serialization order.
+
+## D-010 — PII scrubbing for prompt-bound free text (brief §9, I12)
+
+**Date:** 2026-07-16
+**Decision:** The vault remains the *primary* mechanism for identity documents (never in
+memory, never in prompts, substitution at the adapter boundary). Because users also type
+secrets into chat, every prompt-assembly site (episode interpreter transcript + evidence,
+chat-reply, email drafting source notes) additionally passes free text through
+`redactSensitiveText()`: conservative patterns for payment-card digit runs, SSN shapes, and
+passport-shaped identifiers. Internal actions (`chat.deliver-brief`) refuse vault
+placeholders outright — their "adapter" is the persisted, broadcast chat log.
+**Limits (recorded deliberately):** pattern-based scrubbing is best-effort; novel secret
+formats can pass. The mitigation hierarchy is vault first, scrub second, local-only model
+third (D-002 — even a leak stays on the user's machine by default).
+
+## D-011 — Localhost server threat model (brief §9)
+
+**Date:** 2026-07-16
+**Decision:** Binding to 127.0.0.1 does not protect against the user's own browser as a
+confused deputy, so the browser attack surface is closed structurally rather than with an
+auth token: the built shell is served **same-origin from the core** (no CORS headers exist
+in production, so foreign pages cannot read responses); mutating routes require
+`Content-Type: application/json` (forces a CORS preflight that fails without ACAO);
+the `Host` header must be loopback (DNS-rebinding defense); WebSocket upgrades enforce an
+Origin allowlist; `POST /api/outcomes/:id/edit` zod-validates the signature. Dev mode
+(`vite dev`) opts into CORS for exactly one origin via `ANTICIPY_DEV_ORIGIN`.
+High-sensitivity memory values are redacted in every server snapshot (stored ≠ exposed).
+
+## D-012 — Known debts (accepted, not forgotten)
+
+**Date:** 2026-07-16
+- The actionType taxonomy appears in three switches (actor dispatch, verifier check, chat
+  pipeline watch policy). Mitigations in place: the actor pre-checks routability *before*
+  consuming the approval token; an unknown type can no longer close by fallthrough; and no
+  wedge states remain (every failure path reaches a cancellable state). The right end state
+  is a per-actionType module registry mirroring the preparer/poller registries — planned
+  alongside the Phase 3 real adapters, which will force the taxonomy open anyway.
+- The shell keeps a hand-maintained mirror of the protocol types (`src/lib/types.ts`)
+  because its typecheck must not depend on `core/dist` build order; the mirror is the
+  documented price. Revisit with project references if drift ever bites.
+- The shell refetches the full snapshot per event burst (40 ms coalesced). Fine at
+  operator-console scale; a delta protocol is the upgrade path if audit/chat history grows.

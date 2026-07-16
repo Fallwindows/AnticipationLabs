@@ -15,13 +15,10 @@ import { hashCanonical } from '../util/canonical.js';
  * so the UI can show the invalidation (§7).
  */
 export function signatureHash(sig: ActionSignature): string {
-  return hashCanonical({
-    actionType: sig.actionType,
-    target: sig.target,
-    params: sig.params,
-    pageVersionHash: sig.pageVersionHash,
-    disclosures: sig.disclosures,
-  });
+  // The WHOLE signature object is the signed surface: any field ever added to
+  // ActionSignature automatically participates in the hash, so it can never be
+  // silently excluded from "any edit invalidates" (I5).
+  return hashCanonical(sig);
 }
 
 export type TokenCheck =
@@ -53,7 +50,14 @@ export class ApprovalService {
       id: this.ids.next('apr'),
       outcomeId: args.outcomeId,
       signatureHash: signatureHash(args.signature),
-      scope: { ...args.scope, maxUses: 1 },
+      scope: {
+        ...args.scope,
+        maxUses: 1,
+        // normalize to UTC so expiry comparisons are timezone-proof
+        expiresAt: args.scope.expiresAt
+          ? new Date(args.scope.expiresAt).toISOString()
+          : undefined,
+      },
       issuedAt: this.clock.now().toISOString(),
       issuedBy: args.issuedBy,
     };
@@ -70,7 +74,10 @@ export class ApprovalService {
     if (!token) return { ok: false, reason: 'not-found' };
     if (token.invalidatedAt) return { ok: false, reason: 'invalidated' };
     if (token.consumedAt) return { ok: false, reason: 'consumed' };
-    if (token.scope.expiresAt && token.scope.expiresAt <= this.clock.now().toISOString()) {
+    if (
+      token.scope.expiresAt &&
+      new Date(token.scope.expiresAt).getTime() <= this.clock.now().getTime()
+    ) {
       return { ok: false, reason: 'expired' };
     }
     if (token.signatureHash !== signatureHash(signature)) {
@@ -117,5 +124,9 @@ export class ApprovalService {
 
   byOutcome(outcomeId: string): ApprovalToken[] {
     return this.repo.byOutcome(outcomeId);
+  }
+
+  all(): ApprovalToken[] {
+    return this.repo.all();
   }
 }

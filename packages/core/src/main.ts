@@ -1,3 +1,7 @@
+import { homedir } from 'node:os';
+import { existsSync } from 'node:fs';
+import { dirname, join, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { AgentCore } from './app/agentCore.js';
 import { FixtureWorld } from './integrations/fixtures/fixtureWorld.js';
 import { buildFixturePorts } from './integrations/fixtures/fixtureAdapters.js';
@@ -6,6 +10,7 @@ import { ChatPipeline } from './server/chatPipeline.js';
 import { CoreServer } from './server/server.js';
 import { DEFAULT_PORT } from './server/protocol.js';
 import { seedDemoMemory, seedDemoWorld } from './demo/seedWorld.js';
+import { SystemClock } from './util/clock.js';
 
 /**
  * Agent core service entrypoint (§3). Long-running local process: owns the state
@@ -16,12 +21,15 @@ import { seedDemoMemory, seedDemoWorld } from './demo/seedWorld.js';
  * identical either way (§6). The model is the configured local runtime (D-002).
  */
 async function main(): Promise<void> {
-  const dbPath = process.env.ANTICIPY_DB ?? 'var/anticipy.sqlite3';
+  // Durable state lives in a stable per-user location, never relative to the cwd —
+  // an Electron-spawned core and a `pnpm dev` core must share one database.
+  const dbPath = process.env.ANTICIPY_DB ?? join(homedir(), '.anticipy', 'anticipy.sqlite3');
   const port = Number(process.env.ANTICIPY_PORT ?? DEFAULT_PORT);
   const telephonyEnabled = process.env.ANTICIPY_ENABLE_TELEPHONY === '1';
 
+  const clock = new SystemClock();
   const world = new FixtureWorld();
-  world.now = () => new Date().toISOString();
+  world.now = () => clock.now().toISOString();
   seedDemoWorld(world);
   const ports = buildFixturePorts(world, { telephonyEnabled });
 
@@ -32,12 +40,20 @@ async function main(): Promise<void> {
     llm,
     read: ports.read,
     write: ports.write,
+    clock,
     userName: process.env.ANTICIPY_USER ?? 'Omar',
   });
   if (core.memory.query().length === 0) seedDemoMemory(core);
 
+  // Serve the built shell same-origin (no CORS surface); Vite dev needs an explicit
+  // dev origin (ANTICIPY_DEV_ORIGIN=http://localhost:5173).
+  const here = dirname(fileURLToPath(import.meta.url));
+  const shellDist = resolve(here, '..', '..', 'shell', 'dist');
   const pipeline = new ChatPipeline(core, llm, process.env.ANTICIPY_USER ?? 'Omar');
-  const server = new CoreServer(core, pipeline, port);
+  const server = new CoreServer(core, pipeline, port, {
+    staticDir: existsSync(shellDist) ? shellDist : undefined,
+    devOrigin: process.env.ANTICIPY_DEV_ORIGIN,
+  });
   await server.listen();
 
   // Watches must fire while the app is open; the scheduler ticks on a timer in

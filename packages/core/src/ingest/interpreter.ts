@@ -2,6 +2,7 @@ import { z } from 'zod';
 import type { Episode } from '../domain/types.js';
 import type { LLMProvider } from '../llm/provider.js';
 import type { MemoryStore } from '../memory/memoryStore.js';
+import { redactSensitiveText } from '../util/redact.js';
 
 /**
  * Structured output contract for episode interpretation (§5.1). The interpreter:
@@ -83,11 +84,14 @@ export class EpisodeInterpreter {
    * the prompt.
    */
   async interpret(episode: Episode): Promise<Interpretation> {
+    // Utterance and evidence text is user/third-party controlled and may contain
+    // identity documents or card numbers the vault never saw — scrub before any of
+    // it reaches the model (I12; the memory side is already the redaction view).
     const transcript = episode.utterances
-      .map((u, i) => `[${i}] ${u.speaker} (${u.channel}, ${u.at}): ${u.text}`)
+      .map((u, i) => `[${i}] ${u.speaker} (${u.channel}, ${u.at}): ${redactSensitiveText(u.text)}`)
       .join('\n');
     const evidence = episode.evidence
-      .map((e) => `- ${e.kind} ${e.ref}: ${JSON.stringify(e.data ?? {})}`)
+      .map((e) => `- ${e.kind} ${e.ref}: ${redactSensitiveText(JSON.stringify(e.data ?? {}))}`)
       .join('\n');
     const memoryLines = this.memory.promptLines().join('\n');
 
