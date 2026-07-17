@@ -21,6 +21,7 @@
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "dev": "tsx src/main.ts",
     "demo": "tsx src/demo/runDemo.ts",
+    "demo:flight": "tsx src/demo/runScenario8.ts",
     "test": "vitest run",
     "test:watch": "vitest",
     "test:scenarios": "vitest run test/scenarios"
